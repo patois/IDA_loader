@@ -1,245 +1,194 @@
-import idc 
 import idaapi
-import struct
+from idc import *
 
-ROM_SIGNATURE_OFFSET 	= 0x104
-ROM_SIGNATURE        	= "\xCE\xED\x66\x66\xCC\x0D\x00\x0B\x03\x73\x00\x83\x00\x0C\x00\x0D"
-ROM_SIGNATURE		+= "\x00\x08\x11\x1F\x88\x89\x00\x0E\xDC\xCC\x6E\xE6\xDD\xDD\xD9\x99"
-ROM_SIGNATURE		+= "\xBB\xBB\x67\x63\x6E\x0E\xEC\xCC\xDD\xDC\x99\x9F\xBB\xB9\x33\x3E"
-ROM_SIGNATURE_LENGTH	= 0x30
-ROM_FORMAT_NAME        	= "Nintendo GB ROM"
-SIZE_HEADER		= 0x150
-ROM0_START		= 0
-ROM0_SIZE		= 0x4000
-ROM1_START		= 0x4000
-ROM1_SIZE		= 0x4000
-VRAM_START		= 0x8000
-VRAM_SIZE		= 0x2000
-RAM1_START		= 0xA000
-RAM1_SIZE		= 0x2000
-RAM0_START		= 0xC000
-RAM0_SIZE		= 0x2000
-ECHO_START		= 0xE000
-ECHO_SIZE		= 0x1E00
-OAM_START		= 0xFE00
-OAM_SIZE		= 0xA0
-IO_START		= 0xFEA0
-IO_SIZE			= 0xE0
-HRAM_START		= 0xFF80
-HRAM_SIZE		= 0x80
+logo = bytes.fromhex("CE ED 66 66 CC 0D 00 0B 03 73 00 83 00 0C 00 0D 00 08 11 1F 88 89 00 0E DC CC 6E E6 DD DD D9 99 BB BB 67 63 6E 0E EC CC DD DC 99 9F BB B9 33 3E".replace(" ", ""))
 
-def dwordAt(li, off):
-	li.seek(off)
-	s = li.read(4)
-	if len(s) < 4: 
-		return 0
-	return struct.unpack('<I', s)[0]
+registers = {
+    0xFF00: "rJOYP",
+    0xFF01: "rSB",
+    0xFF02: "rSC",
+    0xFF04: "rDIV",
+    0xFF05: "rTIMA",
+    0xFF06: "rTMA",
+    0xFF07: "rTAC",
+    0xFF0F: "rIF",
+    0xFF10: "rNR10",
+    0xFF11: "rNR11",
+    0xFF12: "rNR12",
+    0xFF13: "rNR13",
+    0xFF14: "rNR14",
+    0xFF16: "rNR21",
+    0xFF17: "rNR22",
+    0xFF18: "rNR23",
+    0xFF19: "rNR24",
+    0xFF1A: "rNR30",
+    0xFF1B: "rNR31",
+    0xFF1C: "rNR32",
+    0xFF1D: "rNR33",
+    0xFF1E: "rNR34",
+    0xFF20: "rNR41",
+    0xFF21: "rNR42",
+    0xFF22: "rNR43",
+    0xFF23: "rNR44",
+    0xFF24: "rNR50",
+    0xFF25: "rNR51",
+    0xFF26: "rNR52",
+    0xFF30: "rWAV",
+    0xFF40: "rLCDC",
+    0xFF41: "rSTAT",
+    0xFF42: "rSCY",
+    0xFF43: "rSCX",
+    0xFF44: "rLY",
+    0xFF45: "rLYC",
+    0xFF46: "rDMA",
+    0xFF47: "rBGP",
+    0xFF48: "rOBP0",
+    0xFF49: "rOBP1",
+    0xFF4A: "rWY",
+    0xFF4B: "rWX",
+    0xFF4D: "rKEY1",
+    0xFF4F: "rVBK",
+    0xFF51: "rHDMA1",
+    0xFF52: "rHDMA2",
+    0xFF53: "rHDMA3",
+    0xFF54: "rHDMA4",
+    0xFF55: "rHDMA5",
+    0xFF56: "rRP",
+    0xFF68: "rBGPI",
+    0xFF69: "rBGPD",
+    0xFF6A: "rOBPI",
+    0xFF6B: "rOBPD",
+    0xFF70: "rSVBK",
+    0xFF76: "rPCM12",
+    0xFF77: "rPCM34",
+    0xFFFF: "rIE",
 
-def memset_seg(ea, size):
-	for i in xrange(0, size):
-		idc.PatchByte(ea + i, 0)
+}
 
-def accept_file(li, n):
-	# we support only one format per file
-    	if n > 0:
-        	return 0
+def accept_file(li, filename):
+    li.seek(0x104)
+    if li.read(0x30) != logo:
+        return 0
+    return {'format': "Game Boy ROM", 'processor':'gb'}
 
-	# check the Nintendo Logo
-	li.seek(ROM_SIGNATURE_OFFSET)
-	if li.read(ROM_SIGNATURE_LENGTH) == ROM_SIGNATURE:
-		# accept the file
-		return ROM_FORMAT_NAME
 
-	# unrecognized format
-	return 0
+def add_seg(startea, endea, bank, name):
+    s = idaapi.segment_t()
+    s.start_ea = startea + bank * 0x10000
+    s.end_ea   = endea + bank * 0x10000
+    s.sel      = idaapi.setup_selector(bank * 0x1000)
+    s.bitness  = 0
+    s.align    = idaapi.saRelPara
+    s.comb     = idaapi.scPub
+    idaapi.add_segm_ex(s, name, "", idaapi.ADDSEG_NOSREG|idaapi.ADDSEG_OR_DIE)
+
+
 
 def load_file(li, neflags, format):
-	if format != ROM_FORMAT_NAME:
-		Warning("Unknown format name: '%s'" % format)
-    		return 0
-	jump = dwordAt(li, 0)
-	idaapi.set_processor_type("gb", SETPROC_ALL|SETPROC_FATAL)
-	li.seek(0, idaapi.SEEK_END)
-	size = li.tell()
+    size = li.size()
+    size = (size + 0x3FFF) & ~0x3FFF
 
-	# ROM0
-	idc.AddSeg(ROM0_START, ROM0_START + ROM0_SIZE, 0, 0, idaapi.saRelPara, idaapi.scPub)
-	idc.RenameSeg(ROM0_START, "ROM0")
-	idc.SetSegmentType(ROM0_START, idc.SEG_CODE)
-	li.seek(0)
-	li.file2base(0, ROM0_START, ROM0_START + ROM0_SIZE, 0)
+    idaapi.set_processor_type("gb", idaapi.SETPROC_LOADER)
 
-	# ROM1
-	idc.AddSeg(ROM1_START, ROM1_START + ROM1_SIZE, 0, 0, idaapi.saRelPara, idaapi.scPub)
-	idc.RenameSeg(ROM1_START, "ROM1")
-	idc.SetSegmentType(ROM1_START, idc.SEG_CODE)
+    add_seg(0, 0x4000, 0, "ROM0")
+    li.file2base(0, 0, 0x4000, 1)
+    
+    for bank in range(1, int(size / 0x4000)):
+        add_seg(0x4000, 0x8000, bank, "ROM%02X" % bank)
+        li.file2base(0x4000 * bank, 0x4000 + bank * 0x10000, 0x8000 + bank * 0x10000, 1)
+    
+    li.seek(0x149)
+    sram_size_code = ord(li.read(1))
+    sram_size = 0
+    if sram_size_code < 6:
+        sram_size = [0, 1, 1, 4, 16, 8][sram_size_code]
+    
+    add_seg(0x8000, 0xA000, 0, "VRAM")
 
-	# VRAM
-	idc.AddSeg(VRAM_START, VRAM_START + VRAM_SIZE, 0, 0, idaapi.saRelPara, idaapi.scPub)
-	idc.RenameSeg(VRAM_START, "VRAM")
+    
+    for bank in range(0, sram_size):
+        add_seg(0xA000, 0xC000, bank, "SRAM%X" % bank)
 
-	# RAM1
-	idc.AddSeg(RAM1_START, RAM1_START + RAM1_SIZE, 0, 0, idaapi.saRelPara, idaapi.scPub)
-	idc.RenameSeg(RAM1_START, "RAM1")
-
-	# RAM0
-	idc.AddSeg(RAM0_START, RAM0_START + RAM0_SIZE, 0, 0, idaapi.saRelPara, idaapi.scPub)
-	idc.RenameSeg(RAM0_START, "RAM0")
-
-	# ECHO
-	idc.AddSeg(ECHO_START, ECHO_START + ECHO_SIZE, 0, 0, idaapi.saRelPara, idaapi.scPub)
-	idc.RenameSeg(ECHO_START, "ECHO")
-
-	# OAM
-	idc.AddSeg(OAM_START, OAM_START + OAM_SIZE, 0, 0, idaapi.saRelPara, idaapi.scPub)
-	idc.RenameSeg(OAM_START, "OAM")
-
-	# IO
-	idc.AddSeg(IO_START, IO_START + IO_SIZE, 0, 0, idaapi.saRelPara, idaapi.scPub)
-	idc.RenameSeg(IO_START, "IO")
-
-	# HRAM
-	idc.AddSeg(HRAM_START, HRAM_START + HRAM_SIZE, 0, 0, idaapi.saRelPara, idaapi.scPub)
-	idc.RenameSeg(HRAM_START, "HRAM")
-
-	header_info(li)
-	naming()
-	print("[+] Load OK")
-	return 1
-
-def header_info(li):
-	idaapi.add_long_cmt(0, True, "-------------------------------")
-	li.seek(0x100)
-	idc.ExtLinA(0, 1,  "; ROM HEADER")
-	idc.ExtLinA(0, 2,  "; Entry Point : %04X" % (struct.unpack("<I", li.read(4))[0] >> 0x10))
-	li.read(0x30)
-	idc.ExtLinA(0, 3,  "; TITLE : %s" % li.read(0xF))
-	idc.ExtLinA(0, 4,  "; Manufacturer Code : %s" % li.read(4))
-	idc.ExtLinA(0, 5,  "; CGB Flag : %02X" % struct.unpack("<B", li.read(1))[0])
-	idc.ExtLinA(0, 6,  "; New Licensee Code : %02X" % struct.unpack("<B", li.read(1))[0])
-	idc.ExtLinA(0, 7,  "; SGB Flag : %02X" % struct.unpack("<B", li.read(1))[0])
-	idc.ExtLinA(0, 8,  "; Cartridge Type : %02X" % struct.unpack("<B", li.read(1))[0])
-	idc.ExtLinA(0, 9,  "; ROM Size : %02X" % struct.unpack("<B", li.read(1))[0])
-	idc.ExtLinA(0, 10,  "; RAM Size : %02X" % struct.unpack("<B", li.read(1))[0])
-	idc.ExtLinA(0, 11,  "; Destination Code : %02X" % struct.unpack("<B", li.read(1))[0])
-	idc.ExtLinA(0, 12,  "; Old license Code : %02X" % struct.unpack("<B", li.read(1))[0])
-	idc.ExtLinA(0, 13,  "; Mask ROM Version number : %02X" % struct.unpack("<B", li.read(1))[0])
-	idc.ExtLinA(0, 14,  "; Header Checksum : %02X" % struct.unpack("<B", li.read(1))[0])
-	idc.ExtLinA(0, 15,  "; Global Checksum : %02X" % struct.unpack("<B", li.read(1))[0])
-	idc.ExtLinA(0, 16,  "-------------------------------")
-
-def naming():
-	MakeNameEx(0xFF40, "LCD_Control", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF40)
-	MakeNameEx(0xFF41, "LCD_Status", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF41)
-	MakeNameEx(0xFF42, "SCY", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF42)
-	MakeNameEx(0xFF43, "SCX", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF43)
-	MakeNameEx(0xFF44, "LY", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF44)
-	MakeNameEx(0xFF45, "LYC", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF45)
-	MakeNameEx(0xFF4A, "WY", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF4A)
-	MakeNameEx(0xFF4B, "WX", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF4B)
-	MakeNameEx(0xFF47, "BGP", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF47)	
-	MakeNameEx(0xFF48, "OBP0", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF48)
-	MakeNameEx(0xFF49, "OBP1", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF49)
-	MakeNameEx(0xFF68, "BCPS", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF68)
-	MakeNameEx(0xFF69, "BCPD", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF69)
-	MakeNameEx(0xFF6A, "OCPS", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF6A)
-	MakeNameEx(0xFF6B, "OCPD", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF6B)
-	MakeNameEx(0xFF4F, "VBK", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF4F)
-	MakeNameEx(0xFF46, "DMA", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF46)
-	MakeNameEx(0xFF51, "HDMA1", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF51)
-	MakeNameEx(0xFF52, "HDMA2", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF52)
-	MakeNameEx(0xFF53, "HDMA3", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF53)
-	MakeNameEx(0xFF54, "HDMA4", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF54)
-	MakeNameEx(0xFF55, "HDMA5", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF55)
-	MakeNameEx(0xFF10, "NR10", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF10)
-	MakeNameEx(0xFF11, "NR11", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF11)
-	MakeNameEx(0xFF12, "NR12", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF12)
-	MakeNameEx(0xFF13, "NR13", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF13)
-	MakeNameEx(0xFF14, "NR14", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF14)
-	MakeNameEx(0xFF16, "NR21", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF16)
-	MakeNameEx(0xFF17, "NR22", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF17)
-	MakeNameEx(0xFF18, "NR23", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF18)
-	MakeNameEx(0xFF19, "NR24", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF19)
-	MakeNameEx(0xFF1A, "NR30", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF1A)
-	MakeNameEx(0xFF1B, "NR31", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF1B)
-	MakeNameEx(0xFF1C, "NR32", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF1C)
-	MakeNameEx(0xFF1D, "NR33", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF1D)
-	MakeNameEx(0xFF1E, "NR34", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF1E)
-	MakeNameEx(0xFF20, "NR41", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF20)
-	MakeNameEx(0xFF21, "NR42", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF21)
-	MakeNameEx(0xFF22, "NR43", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF22)
-	MakeNameEx(0xFF23, "NR44", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF23)
-	MakeNameEx(0xFF24, "NR50", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF24)
-	MakeNameEx(0xFF25, "NR51", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF25)
-	MakeNameEx(0xFF26, "NR52", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF26)
-	MakeNameEx(0xFF00, "JOYP", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF00)
-	MakeNameEx(0xFF01, "SB", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF01)
-	MakeNameEx(0xFF02, "SC", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF02)
-	MakeNameEx(0xFF04, "DIV", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF04)
-	MakeNameEx(0xFF05, "TIMA", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF05)
-	MakeNameEx(0xFF06, "TMA", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF06)
-	MakeNameEx(0xFF07, "TAC", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF07)
-	MakeNameEx(0xFFFF, "IE", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFFFF)
-	MakeNameEx(0xFF0F, "IF", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF0F)
-	MakeNameEx(0xFF4D, "KEY1", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF4D)
-	MakeNameEx(0xFF56, "RP", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF56)
-	MakeNameEx(0xFF70, "SVBK", SN_NOCHECK | SN_NOWARN)
-	MakeByte(0xFF70)
-
-
-def main():
-	return 0
+    li.seek(0x143)
+    is_cgb = ord(li.read(1)) & 0x80
+    
+    if is_cgb:
+        add_seg(0xC000, 0xD000, 0, "WRAM0")
+        for bank in range(1, 8):
+            add_seg(0xD000, 0xE000, bank, "WRAM%X" % bank)
+    else:
+        add_seg(0xC000, 0xE000, 0, "WRAM")
+    
+    add_seg(0xFE00, 0xFEA0, 0, "OAM")
+    
+    add_seg(0xFF00, 0xFF80, 0, "MMIO")
+    add_seg(0xFF80, 0xFFFF, 0, "HRAM")
+    add_seg(0xFFFF, 0x10000, 0, "IE")
+    
+    for addr, name in registers.items():
+        set_name(addr, name)
+        if name == "IO_WAV":
+            create_data(addr, 0, 16, 0)
+        else:
+            create_data(addr, 0, 1, 0)
+    
+    add_func(0x100)
+    set_name(0x100, "Start")
+    for i in range(13 - 1, 0 - 1, -1):
+        entry = i * 8
+        li.seek(entry)
+        if li.read(1) in b"\x00\xff":
+            continue
+        add_func(entry)
+        set_name(entry, ["Rst00", "Rst08", "Rst10", "Rst18",
+                         "Rst20", "Rst28", "Rst30", "Rst38",
+                         "VBlankInterrupt", "StatInterrupt", "TimerInterrupt", "SerialInterrupt",
+                         "JoypadInterrupt"][i])
+        
+    create_data(0x104, 0, 0x30, 0)
+    set_name(0x104, "NintendoLogo")
+    
+    if is_cgb:
+        create_strlit(0x134, 0x143)
+        set_name(0x134, "Title")
+        create_data(0x143, 0, 1, 0)
+        set_name(0x143, "CgbFlag")
+    else:
+        create_strlit(0x134, 0x144)
+        set_name(0x134, "Title")
+    
+    li.seek(0x14B)
+    has_new_licensee_code = li.read(1) == '\x33'
+    
+    create_strlit(0x144, 0x146)
+    if has_new_licensee_code:
+        set_name(0x144, "LicenseeCode")
+    
+    create_data(0x146, 0, 1, 0)
+    set_name(0x146, "SgbFlag")
+    
+    create_data(0x147, 0, 1, 0)
+    set_name(0x147, "CartridgeType")
+    
+    create_data(0x148, 0, 1, 0)
+    set_name(0x148, "RomSize")
+    
+    create_data(0x149, 0, 1, 0)
+    set_name(0x149, "RamSize")
+    
+    create_data(0x14A, 0, 1, 0)
+    set_name(0x14A, "DestinationCode")
+    
+    create_data(0x14B, 0, 1, 0)
+    set_name(0x14B, "OldLicenseeCode" if has_new_licensee_code else "LicenseeCode")
+    
+    create_data(0x14C, 0, 1, 0)
+    set_name(0x14C, "Version")
+    
+    create_data(0x14D, 0, 1, 0)
+    set_name(0x14D, "HeaderChecksum")
+    
+    create_data(0x14E, 0, 2, 0)
+    set_name(0x14E, "GlobalChecksum")
+    
+    return 1 
